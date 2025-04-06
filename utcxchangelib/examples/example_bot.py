@@ -1,5 +1,5 @@
 from typing import Optional
-import xchange_client
+from utcxchangelib import xchange_client
 import asyncio
 import argparse
 
@@ -79,7 +79,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
                 earnings = news_data["value"]
                 self.apt_earnings = earnings
                 
-                fair_price_APT = #earnings * constant_PE_ratio
+                fair_price_APT = 0 #change to: earnings * constant_PE_ratio
                 
                 print(f"[{timestamp}] APT Earnings Update: {earnings}")
             elif subtype == "petition" and asset == "DLR":
@@ -88,7 +88,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
                 self.dlr_signatures = cumulative
                 if cumulative >= 100000:
                     
-                    fair_price_DLR = #something 
+                    fair_price_DLR = 0 # change to something 
                 else:
                     fair_price_DLR = 0
                 
