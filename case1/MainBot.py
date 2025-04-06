@@ -29,6 +29,18 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.round = 0
         self.logfile = os.path.join(LOG_PATH, f"trading_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
 
+        #Fair price variables
+        self.fair_price_APT = None    
+        self.fair_price_DLR = None   
+        self.fair_price_MKJ = None
+        
+        #News variables
+        self.apt_earnings = None      # Latest earnings value for APT
+        self.dlr_signatures = 0       # Cumulative petition signatures for DLR
+        self.mkj_news_events = []     # List of unstructured news events for MKJ
+        
+
+        #Trading variables
         self.order_size = 10
         self.etf_margin = 5 # minimum amount needed to justify ETF arbitrage
         self.fade = 2
@@ -104,6 +116,13 @@ class MyXchangeClient(xchange_client.XChangeClient):
 
 
     async def bot_handle_trade_msg(self, symbol: str, price: int, qty: int):
+        # This function is called when an actual trade is executed.
+        # It provides immediate market data such as the transaction price and volume.
+        print(f"Trade executed for {symbol}: {qty} shares at {price}")
+        # Here you could update your fair price estimation based on recent trade activity.
+        # For example:
+        #fair_price_based_on_trade = <YOUR_FORMULA_HERE>
+        # You might combine recent trade prices and volumes to adjust your short-term fair value.
         pass
 
     async def bot_handle_book_update(self, symbol: str) -> None:
@@ -112,34 +131,60 @@ class MyXchangeClient(xchange_client.XChangeClient):
     async def bot_handle_swap_response(self, swap: str, qty: int, success: bool):
         pass
 
-    async def bot_handle_news(self, news_release: dict):
 
-        # Parsing the message based on what type was received
-        timestamp = news_release["timestamp"] # This is in exchange ticks not ISO or Epoch
-        news_type = news_release['kind']
+
+
+
+
+
+    async def bot_handle_news(self, news_release: dict):
+        """        
+        For APT (earnings news): earnings news is received twice per day.
+        For DLR (petition news): petition news is received five times per day.
+        """
+        timestamp = news_release["timestamp"]
+        news_type = news_release["kind"]
         news_data = news_release["new_data"]
 
         if news_type == "structured":
             subtype = news_data["structured_subtype"]
-            symb = news_data["asset"]
-            if subtype == "earnings":
-                
+            asset = news_data["asset"]
+            if subtype == "earnings" and asset == "APT":
                 earnings = news_data["value"]
-
-                # Do something with this data
-
-            else:
-
-             
+                self.apt_earnings = earnings
+                
+                fair_price_APT = None #earnings * constant_PE_ratio
+                
+                print(f"[{timestamp}] APT Earnings Update: {earnings}")
+            elif subtype == "petition" and asset == "DLR":
                 new_signatures = news_data["new_signatures"]
                 cumulative = news_data["cumulative"]
-
-                # Do something with this data
+                self.dlr_signatures = cumulative
+                if cumulative >= 100000:
+                    
+                    fair_price_DLR = None 
+                else:
+                    fair_price_DLR = 0
+                
+                print(f"[{timestamp}] DLR Petition Update: +{new_signatures} new, cumulative {cumulative}")
+            else:
+                print(f"[{timestamp}] Received structured news for asset {asset} with subtype {subtype}")
         else:
+            content = news_data.get("content", "")
+            self.mkj_news_events.append((timestamp, content))
+            fair_price_MKJ = None 
+            #print(f"[{timestamp}] MKJ Unstructured News: {content}")
+            #Carina still working on more advanded stuffs (only updated the certain parts to the git)
 
-            # Not sure what you would do with unstructured data....
 
-            pass
+
+
+
+
+
+
+
+
 
     async def trade(self):
         while True:
