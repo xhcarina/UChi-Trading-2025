@@ -36,14 +36,13 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.fair_price_MKJ = None
         
         #News variables
-        self.apt_earnings = None      # Latest earnings value for APT
+        self.apt_earnings = None
 
-        self.dlr_cumulative = 0       # Cumulative petition signatures for DLR
-        # Track number of DLR events in current round.
+        self.dlr_cumulative = 0 
         self.dlr_event_count = 0
-        # Total number of DLR news events per round:
         self.total_events_per_round = 10 * 5  # 10 days * 5 events per day = 50 events
-        # Use a rolling window for log increments; starting with an initial guess.
+   
+   
         self.log_increments = []  # store log(new_signatures)
         self.ln_mu = 10.0    # initial guess; adjust with calibration data
         self.ln_sigma = 0.5  # initial guess; adjust with calibration data
@@ -171,7 +170,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
                 # Process DLR signature update news.
                 new_signatures = news_data["new_signatures"]
                 cumulative = news_data["cumulative"]
-                print(f"DLR news - new signatures: {new_signatures}, cumulative: {cumulative}")
+                print(f"[{timestamp}] DLR: new signatures: {new_signatures}, cumulative: {cumulative}")
                 self.dlr_cumulative = cumulative
                 # Increment our event counter each time we receive a DLR signature update.
                 self.dlr_event_count += 1
@@ -185,6 +184,8 @@ class MyXchangeClient(xchange_client.XChangeClient):
             fair_price_MKJ = None 
             #print(f"[{timestamp}] MKJ Unstructured News: {content}")
             #Carina still working on more advanded stuffs (only updated the certain parts to the git)
+
+
 
 
 
@@ -250,6 +251,11 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.fair_price_dlr = 100 * probability
         print(f"[timestamp: {timestamp}] Updated DLR fair price: {self.fair_price_dlr:.2f} "
               f"(Probability: {probability:.2%}, remaining events: {remaining_events})")
+
+
+
+
+
 
     async def trade(self):
         while True:
