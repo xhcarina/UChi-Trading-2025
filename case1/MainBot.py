@@ -189,25 +189,45 @@ class MyXchangeClient(xchange_client.XChangeClient):
 
 
 
+    def monte_carlo_probability(self, current: int, steps: int, target: int, alpha: float, sigma: float, n_sims: int = 10000) -> float:
+        """
+        Estimate the probability of reaching the target number of signatures using Monte Carlo simulation.
+        
+        Args:
+            current: current cumulative signatures
+            steps: how many signature events remain
+            target: the goal (100000)
+            alpha: median multiplicative growth per step
+            sigma: volatility of the lognormal growth
+            n_sims: number of Monte Carlo trials
+
+        Returns:
+            Estimated probability of reaching the target by the end of steps
+        """
+        if current >= target:
+            return 1.0
+        if steps == 0:
+            return 0.0
+
+        # lognormal distribution: np.random.lognormal takes in mean and sigma of the *log*
+        log_mu = np.log(alpha)
+
+        # Simulate n_sims paths, each with 'steps' multiplicative jumps
+        random_factors = np.random.lognormal(mean=log_mu, sigma=sigma, size=(n_sims, steps))
+        cumulative_ends = current * np.prod(random_factors, axis=1)
+
+        # Compute how many trials reached the threshold
+        successes = np.sum(cumulative_ends >= target)
+        return successes / n_sims
 
 
     def update_dlr_fair_price(self, cumulative: int, timestamp: int):
         """
-        Update the fair price of DLR using the fixed lognormal parameters.
-
-        The model assumes that signature updates follow a process:
-            S_i ~ LogNormal( log(alpha) + log(S_{i-1}), sigma^2 )
-        The fair price is computed as:
-            Fair Price = 100 * P(S_final >= 100000)
-
-        We approximate the remaining signatures over the remaining events using
-        a Fenton–Wilkinson method.
+        Update the fair price of DLR by calling a Monte Carlo simulation to estimate the probability of reaching
+        100,000 signatures.
         """
-        # Define the threshold for success.
         threshold = 100000
-        # Calculate signatures needed.
         required = max(threshold - cumulative, 0)
-        # Calculate how many petition updates remain in this round.
         remaining_events = self.total_events_per_round - self.dlr_event_count
 
         if required == 0:
@@ -215,33 +235,14 @@ class MyXchangeClient(xchange_client.XChangeClient):
         elif remaining_events <= 0:
             probability = 0.0
         else:
-            # For one event, the increment factor is lognormal with fixed parameters.
-            single_mean = math.exp(self.ln_mu + self.ln_sigma**2 / 2)
-            single_var = (math.exp(self.ln_sigma**2) - 1) * math.exp(2 * self.ln_mu + self.ln_sigma**2)
-            # Over the remaining events, the expected total increase is:
-            M = remaining_events * single_mean
-            V = remaining_events * single_var
-
-            # Approximate the sum of increments as LogNormal(mu_S, sigma_S^2) via Fenton–Wilkinson.
-            sigma_S_sq = math.log(1 + V / (M**2))
-            mu_S = math.log(M) - sigma_S_sq / 2
-            sigma_S = math.sqrt(sigma_S_sq)
-
-            # Now, we want the probability that the sum of remaining signatures is at least 'required'.
-            # For a lognormal variable X, the CDF is:
-            #   F(x; mu, sigma) = 0.5 * [1 + erf((ln(x) - mu)/(sigma*sqrt(2)))]
-            # Therefore, P(X >= required) = 1 - F(required)
-            try:
-                ln_required = math.log(required)
-                cdf = 0.5 * (1 + math.erf((ln_required - mu_S) / (sigma_S * math.sqrt(2))))
-            except ValueError:
-                cdf = 0.0
-
-            probability = 1 - cdf
+            # Call the Monte Carlo simulation to compute the probability.
+            probability = self.monte_carlo_probability(cumulative, remaining_events, threshold, self.alpha, self.sigma, n_sims=10000)
 
         self.fair_price_DLR = 100 * probability
         print(f"[timestamp: {timestamp}] Updated DLR fair price: {self.fair_price_DLR:.2f} "
-              f"(Probability: {probability:.2%}, remaining events: {remaining_events})")
+            f"(Probability: {probability:.2%}, remaining events: {remaining_events})")
+
+
 
 
     async def trade(self):
