@@ -2,6 +2,7 @@ from typing import Optional
 import asyncio
 import argparse
 import math
+import numpy as np
 import random
 import os
 from datetime import datetime
@@ -36,7 +37,17 @@ class MyXchangeClient(xchange_client.XChangeClient):
         
         #News variables
         self.apt_earnings = None      # Latest earnings value for APT
-        self.dlr_signatures = 0       # Cumulative petition signatures for DLR
+
+        self.dlr_cumulative = 0       # Cumulative petition signatures for DLR
+        # Track number of DLR events in current round.
+        self.dlr_event_count = 0
+        # Total number of DLR news events per round:
+        self.total_events_per_round = 10 * 5  # 10 days * 5 events per day = 50 events
+        # Use a rolling window for log increments; starting with an initial guess.
+        self.log_increments = []  # store log(new_signatures)
+        self.ln_mu = 10.0    # initial guess; adjust with calibration data
+        self.ln_sigma = 0.5  # initial guess; adjust with calibration data
+
         self.mkj_news_events = []     # List of unstructured news events for MKJ
         
 
@@ -157,16 +168,15 @@ class MyXchangeClient(xchange_client.XChangeClient):
                 
                 print(f"[{timestamp}] APT Earnings Update: {earnings}")
             elif subtype == "petition" and asset == "DLR":
+                # Process DLR signature update news.
                 new_signatures = news_data["new_signatures"]
                 cumulative = news_data["cumulative"]
-                self.dlr_signatures = cumulative
-                if cumulative >= 100000:
-                    
-                    fair_price_DLR = None 
-                else:
-                    fair_price_DLR = 0
-                
-                print(f"[{timestamp}] DLR Petition Update: +{new_signatures} new, cumulative {cumulative}")
+                print(f"DLR news - new signatures: {new_signatures}, cumulative: {cumulative}")
+                self.dlr_cumulative = cumulative
+                # Increment our event counter each time we receive a DLR signature update.
+                self.dlr_event_count += 1
+                # Update our fair price estimate using our refined method.
+                self.update_dlr_fair_price(new_signatures, cumulative, timestamp)
             else:
                 print(f"[{timestamp}] Received structured news for asset {asset} with subtype {subtype}")
         else:
@@ -178,13 +188,68 @@ class MyXchangeClient(xchange_client.XChangeClient):
 
 
 
+    def update_lognormal_params(self, new_signatures: int):
+        """
+        Update the estimates of ln_mu and ln_sigma using a rolling window of observations.
+        For simplicity, we append the log(new_signatures) and compute the sample mean and std.
+        """
+        # Only update if new_signatures is positive
+        if new_signatures > 0:
+            log_val = math.log(new_signatures)
+            self.log_increments.append(log_val)
+            
+            # Optionally, limit the size of the window to the most recent N events
+            window_size = 50  # you can adjust this value
+            if len(self.log_increments) > window_size:
+                self.log_increments = self.log_increments[-window_size:]
+            
+            # Update parameters using the current window
+            self.ln_mu = np.mean(self.log_increments)
+            self.ln_sigma = np.std(self.log_increments, ddof=1)
+            print(f"Updated ln_mu: {self.ln_mu:.4f}, ln_sigma: {self.ln_sigma:.4f}")
 
 
+    def update_dlr_fair_price(self, new_signatures: int, cumulative: int, timestamp: int):
+        """
+        Update the fair price of DLR using the updated lognormal parameters.
+        """
+        # First, update our lognormal parameters with the new increment.
+        self.update_lognormal_params(new_signatures)
+        
+        # Define the threshold for a successful outcome.
+        threshold = 100000
+        required = max(threshold - cumulative, 0)
+        remaining_events = self.total_events_per_round - self.dlr_event_count
+        
+        if required == 0:
+            probability = 1.0
+        elif remaining_events <= 0:
+            probability = 0.0
+        else:
+            # Mean and variance for one event based on the updated parameters.
+            single_mean = math.exp(self.ln_mu + self.ln_sigma**2 / 2)
+            single_var = (math.exp(self.ln_sigma**2) - 1) * math.exp(2 * self.ln_mu + self.ln_sigma**2)
+            M = remaining_events * single_mean
+            V = remaining_events * single_var
 
+            # Fenton-Wilkinson approximation parameters for the sum.
+            sigma_S_sq = math.log(1 + V / (M**2))
+            mu_S = math.log(M) - sigma_S_sq / 2
+            sigma_S = math.sqrt(sigma_S_sq)
 
+            # Calculate the CDF for the lognormal approximation.
+            try:
+                ln_required = math.log(required)
+                cdf = 0.5 * (1 + math.erf((ln_required - mu_S) / (sigma_S * math.sqrt(2))))
+            except ValueError:
+                cdf = 0.0
 
+            # The probability of reaching the threshold is the chance that the sum of the remaining increments exceeds 'required'
+            probability = 1 - cdf
 
-
+        self.fair_price_dlr = 100 * probability
+        print(f"[timestamp: {timestamp}] Updated DLR fair price: {self.fair_price_dlr:.2f} "
+              f"(Probability: {probability:.2%}, remaining events: {remaining_events})")
 
     async def trade(self):
         while True:
