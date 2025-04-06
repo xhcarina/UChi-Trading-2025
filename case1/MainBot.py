@@ -89,7 +89,12 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.log(f"Placed {side.name} {qty} {symbol} @ {price}")
 
     async def bot_place_arbitrage_order(self, fair_price):
+        '''
+        Inputs:
+            fair_price: (dict) containing fair price of each asset
+        '''
         # TODO: account for different swap fees (to and from AKAV)
+        # TODO: consider order of buying/selling during arbitrage
         swap_fee = SWAP_MAP["toAKAV"].cost
         akav_nav = sum(fair_price[s] for s in SYMBOLS)
         price = fair_price["AKAV"]
@@ -98,17 +103,17 @@ class MyXchangeClient(xchange_client.XChangeClient):
         if abs(diff) > self.etf_margin + swap_fee:
             qty = 1 # TODO: change qty dynamically?
             if diff > 0:
-                # ETF overpriced -> sell AKAV, buy components, swap from ETF to stocks
+                # ETF overpriced -> sell AKAV, buy components, swap from stocks to ETF
                 await self.bot_place_order_safe("AKAV", qty, xchange_client.Side.SELL, round(price))
                 for s in SYMBOLS:
                     await self.bot_place_order_safe(s, qty, xchange_client.Side.BUY, round(fair_price[s]))
-                await self.place_swap_order("fromAKAV", qty)
+                await self.place_swap_order("toAKAV", qty)
             else:
-                # ETF underpriced -> buy AKAV, sell components, swap to ETF
+                # ETF underpriced -> buy AKAV, sell components, swap from ETF
                 await self.bot_place_order_safe("AKAV", qty, xchange_client.Side.BUY, round(price))
                 for s in SYMBOLS:
                     await self.bot_place_order_safe(s, qty, xchange_client.Side.SELL, round(fair_price[s]))
-                await self.place_swap_order("toAKAV", qty)
+                await self.place_swap_order("fromAKAV", qty)
             self.log(f"Arbitrage opportunity: ETF {'over' if diff > 0 else 'under'}priced by {diff:.2f}")
 
     async def bot_handle_cancel_response(self, order_id: str, success: bool, error: Optional[str]) -> None:
