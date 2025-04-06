@@ -16,8 +16,8 @@ from sklearn.metrics import confusion_matrix, classification_report, accuracy_sc
 from sklearn.model_selection import train_test_split
 from scipy.optimize import minimize  # Allowed dependency
 
-# Read the CSV file.
-data = pd.read_csv('Case2.csv', index_col=0)
+# Read the CSV file. Fixed the file path by replacing backslashes with forward slashes.
+data = pd.read_csv('../case2/Case2.csv', index_col=0)
 
 '''
 We recommend that you change your train and test split
