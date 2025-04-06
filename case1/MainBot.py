@@ -247,8 +247,8 @@ class MyXchangeClient(xchange_client.XChangeClient):
             # The probability of reaching the threshold is the chance that the sum of the remaining increments exceeds 'required'
             probability = 1 - cdf
 
-        self.fair_price_dlr = 100 * probability
-        print(f"[timestamp: {timestamp}] Updated DLR fair price: {self.fair_price_dlr:.2f} "
+        self.fair_price_DLR = 100 * probability
+        print(f"[timestamp: {timestamp}] Updated DLR fair price: {self.fair_price_DLR:.2f} "
               f"(Probability: {probability:.2%}, remaining events: {remaining_events})")
 
     async def trade(self):
