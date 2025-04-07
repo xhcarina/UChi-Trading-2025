@@ -46,6 +46,8 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.sigma = 0.006
         self.ln_mu = math.log(self.alpha)  # constant, fixed value
         self.ln_sigma = self.sigma           # constant, fixed value
+        self.pe_ratio_APT = 10 #Given on Ed
+
 
         self.mkj_news_events = []     # List of unstructured news events for MKJ
         
@@ -164,9 +166,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
             if subtype == "earnings" and asset == "APT":
                 earnings = news_data["value"]
                 self.apt_earnings = earnings
-                
-                fair_price_APT = None #earnings * constant_PE_ratio
-                
+                fair_price_APT = earnings * self.pe_ratio_APT #earnings * constant_PE_ratio
                 print(f"[{timestamp}] APT Earnings Update: {earnings}")
             elif subtype == "petition" and asset == "DLR":
                 # Process DLR signature update news.
