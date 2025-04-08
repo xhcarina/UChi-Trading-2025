@@ -42,11 +42,13 @@ def find_fair_price(orders):
     # If there's no volume at all, just return None or something sensible
     if not parentheses:
         return None
-
+    
     # 4. Compute prefix of "(" counts
     prefix_open = [0] * (len(parentheses) + 1)
     for i in range(len(parentheses)):
         prefix_open[i+1] = prefix_open[i] + (1 if parentheses[i] == "(" else 0)
+
+
 
     # Compute suffix of ")" counts
     suffix_close = [0] * (len(parentheses) + 1)
@@ -110,4 +112,3 @@ if __name__ == "__main__":
     price = find_fair_price(sample_orders)
     print("Fair price is:", price)
 
-##Generate by AI -- will clean up later
