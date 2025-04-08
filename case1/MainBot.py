@@ -34,6 +34,8 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.fair_price_APT = None    
         self.fair_price_DLR = None   
         self.fair_price_MKJ = None
+        self.fair_price_AKAV = None
+        self.fair_price_AKIM = None
         
         #News variables
         self.apt_earnings = None
@@ -59,7 +61,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.min_margin = 1
         self.edge_sensitivity = 0.5
         self.slack = 4
-        self.spreads = [5, 10] 
+        self.spreads = [5, 10, 15] 
         self.level_orders = 5  
 
     def log(self, msg):
@@ -85,7 +87,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
             print(f"Over max position for {symbol}")
             return
         if len(self.open_orders) >= MAX_OPEN_ORDERS:
-            print(f"Over max open orders for {symbol}")
+            print(f"Over max open orders")
             return
         await self.place_order(symbol=symbol, qty=qty, side=side, px=price)
         self.log(f"Placed {side.name} {qty} {symbol} @ {price}")
@@ -95,12 +97,11 @@ class MyXchangeClient(xchange_client.XChangeClient):
         Inputs:
             fair_price: (dict) containing fair price of each asset
         '''
-        # TODO: account for different swap fees (to and from AKAV)
         # TODO: consider order of buying/selling during arbitrage
-        swap_fee = SWAP_MAP["toAKAV"].cost
         akav_nav = sum(fair_price[s] for s in SYMBOLS)
         price = fair_price["AKAV"]
         diff = price - akav_nav
+        swap_fee = SWAP_MAP["toAKAV"].cost if diff > 0 else SWAP_MAP["fromAKAV"].cost
 
         if abs(diff) > self.etf_margin + swap_fee:
             qty = 1 # TODO: change qty dynamically?
@@ -166,7 +167,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
             if subtype == "earnings" and asset == "APT":
                 earnings = news_data["value"]
                 self.apt_earnings = earnings
-                fair_price_APT = earnings * self.pe_ratio_APT #earnings * constant_PE_ratio
+                self.fair_price_APT = earnings * self.pe_ratio_APT #earnings * constant_PE_ratio
                 print(f"[{timestamp}] APT Earnings Update: {earnings}")
             elif subtype == "petition" and asset == "DLR":
                 # Process DLR signature update news.
@@ -183,7 +184,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
         else:
             content = news_data.get("content", "")
             self.mkj_news_events.append((timestamp, content))
-            fair_price_MKJ = None 
+            self.fair_price_MKJ = None 
             #print(f"[{timestamp}] MKJ Unstructured News: {content}")
             #Carina still working on more advanded stuffs (only updated the certain parts to the git)
 
@@ -248,19 +249,20 @@ class MyXchangeClient(xchange_client.XChangeClient):
     async def trade(self):
         while True:
             # TODO: replace mid-price with actual fair_price
-            fair_price = {s: self.get_mid_price(s) for s in ALL_SYMBOLS}
+            # fair_price = {s: self.get_mid_price(s) for s in ALL_SYMBOLS}
+            fair_price = {"APT": self.fair_price_APT, "DLR": self.fair_price_DLR, "MKJ": self.fair_price_MKJ, "AKAV": self.fair_price_AKAV, "AKIM": self.fair_price_AKIM}
 
             # ETF Arbitrage
             await self.bot_place_arbitrage_order(fair_price)
 
             # Market Making with Fade and Edge
-            for symbol in ALL_SYMBOLS:
+            for symbol in SYMBOLS:
                 position = self.positions[symbol]
                 fade_adj = -self.fade * (1 if position > 0 else -1) * math.log2(1 + abs(position) / MAX_ABSOLUTE_POSITION)
 
                 for side in [xchange_client.Side.BUY, xchange_client.Side.SELL]:
                     activity = self.get_market_activity_level(symbol, side)
-                    edge = max(int(round(self.min_margin + (self.slack / 2 * math.tanh(-4 * self.edge_sensitivity * activity + 2)))), 1)
+                    edge = max(int(round(self.min_margin + self.slack / 2 * (math.tanh(-4 * self.edge_sensitivity * activity + 2) + 1 ))), 1)
 
                     base_price = fair_price[symbol] + fade_adj
                     price = round(base_price - edge) if side == xchange_client.Side.BUY else round(base_price + edge)
