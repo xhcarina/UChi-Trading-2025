@@ -5,6 +5,7 @@ import math
 import numpy as np
 import random
 import os
+from collections import defaultdict
 from datetime import datetime
 from utcxchangelib import xchange_client
 from utcxchangelib.xchange_client import SWAP_MAP
@@ -34,8 +35,37 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.fair_price_APT = None    
         self.fair_price_DLR = None   
         self.fair_price_MKJ = None
-        self.fair_price_AKAV = None
-        self.fair_price_AKIM = None
+
+        # ETF arbitrage variables
+        self.prev_day_close_AKAV = None
+        self.curr_day_open_AKIM = None
+        self.etf_margin = 5 # minimum amount needed to justify ETF arbitrage
+        self.inverse_eft_margin = 5 # minimum amount needed to justify inverse ETF arbitrage
+
+         # Container for open inverse arb positions
+        # A typical entry will look like:
+        #   {
+        #       "pos_id": 123,
+        #       "is_open": True,
+        #       "akim_side": Side.SELL,
+        #       "akim_qty": 12,
+        #       "akim_avg_px": 101.0,
+        #       "akav_side": Side.SELL,
+        #       "akav_qty": 10,
+        #       "akav_avg_px": 105.0,
+        #       "target_profit": 2.0
+        #   }
+        self.inverse_arb_positions = []
+
+        # For linking order_id -> a position in inverse_arb_positions
+        self.orderid_to_positionid = {}
+
+        # Track partial fills: how many shares have been filled on a given order, 
+        # so we can compute weighted average fill price
+        self.order_fills_qty = defaultdict(int)      # {order_id: total shares filled so far}
+        self.order_fills_value = defaultdict(float)  # {order_id: total fill-value so far (qty * price)}
+
+
         
         #News variables
         self.apt_earnings = None
@@ -56,7 +86,6 @@ class MyXchangeClient(xchange_client.XChangeClient):
 
         #Trading variables
         self.order_size = 10
-        self.etf_margin = 5 # minimum amount needed to justify ETF arbitrage
         self.fade = 50
         self.min_margin = 1
         self.edge_sensitivity = 0.5
@@ -81,16 +110,27 @@ class MyXchangeClient(xchange_client.XChangeClient):
         if not bids or not asks:
             return 0
         return (max(bids.keys()) + min(asks.keys())) / 2
+    
+    def get_best_bid(self, symbol: str) -> float:
+        """Get best bid price with safety checks"""
+        bids = self.order_books[symbol].bids
+        return max(bids.keys()) if bids else 0.0
+
+    def get_best_ask(self, symbol: str) -> float:
+        """Get best ask price with safety checks"""
+        asks = self.order_books[symbol].asks
+        return min(asks.keys()) if asks else 0.0
 
     async def bot_place_order_safe(self, symbol, qty, side, price):
         if abs(self.positions[symbol]) + qty > MAX_ABSOLUTE_POSITION:
             print(f"Over max position for {symbol}")
-            return
+            return None
         if len(self.open_orders) >= MAX_OPEN_ORDERS:
             print(f"Over max open orders")
-            return
-        await self.place_order(symbol=symbol, qty=qty, side=side, px=price)
+            return None
+        order_id = await self.place_order(symbol=symbol, qty=qty, side=side, px=price)
         self.log(f"Placed {side.name} {qty} {symbol} @ {price}")
+        return order_id
 
     async def bot_place_arbitrage_order(self):
         '''
@@ -157,6 +197,135 @@ class MyXchangeClient(xchange_client.XChangeClient):
         #             await self.bot_place_order_safe(s, qty, xchange_client.Side.SELL, round(fair_price[s]))
         #         await self.place_swap_order("fromAKAV", qty)
         #     self.log(f"Arbitrage opportunity: ETF {'over' if diff > 0 else 'under'}priced by {diff:.2f}")
+    
+    async def update_akim_fair_value(self):
+        """Calculate AKIM's fair value based on AKAV's intraday movement"""
+        if self.prev_day_close_AKAV is None or self.curr_day_open_AKIM is None:
+            return
+
+        current_akav = self.get_mid_price("AKAV")
+        akav_pct_change = (current_akav - self.prev_day_close_AKAV) / self.prev_day_close_AKAV
+        self.fair_price_AKIM = self.curr_day_open_AKIM * (1 - akav_pct_change)
+
+    def calculate_hedge_ratio(self) -> float:
+        """Calculate dynamic hedge ratio based on current market prices"""
+        akav_price = self.get_mid_price("AKAV")
+        akim_price = self.get_mid_price("AKIM")
+        
+        if akim_price == 0:
+            return 0.0
+            
+        return akav_price / akim_price
+
+    async def bot_inverse_arbitrage_order(self):
+        akim_bid = self.get_best_bid("AKIM")
+        akim_ask = self.get_best_ask("AKIM")
+        akav_bid = self.get_best_bid("AKAV")
+        akav_ask = self.get_best_ask("AKAV")
+
+        self.update_akim_fair_value()
+
+        hedge_ratio = self.calculate_hedge_ratio()
+        
+        akav_qty = 10
+        akim_qty = round(akav_qty * hedge_ratio)
+
+        if akim_bid - self.fair_price_AKIM > self.inverse_eft_margin:
+            # AKIM is overpriced --> sell AKIM and sell AKAV to hedge
+            order_id_akim = await self.bot_place_order_safe("AKIM", akim_qty, xchange_client.Side.SELL, akim_bid)
+            order_id_akav = await self.bot_place_order_safe("AKAV", akav_qty, xchange_client.Side.SELL, akav_bid)
+
+            if order_id_akim and order_id_akav:
+                # We opened a new position; store it
+                pos_id = len(self.inverse_arb_positions)
+                self.inverse_arb_positions.append({
+                    "pos_id": pos_id,
+                    "is_open": True,
+                    "akim_side": xchange_client.Side.SELL,
+                    "akim_qty": akim_qty,
+                    "akim_avg_px": 0.0,  # we'll update after fills
+                    "akav_side": xchange_client.Side.SELL,
+                    "akav_qty": akav_qty,
+                    "akav_avg_px": 0.0,
+                    "target_profit": akim_bid - self.fair_price_AKIM
+                })
+                # Map the new orders to this position
+                self.orderid_to_positionid[order_id_akim] = pos_id
+                self.orderid_to_positionid[order_id_akav] = pos_id
+        
+        if self.fair_price_AKIM - akim_ask > self.inverse_eft_margin:
+            # AKIM is underpriced --> buy AKIM and buy AKAV to hedge
+            order_id_akim = await self.bot_place_order_safe("AKIM", akim_qty, xchange_client.Side.BUY, akim_ask)
+            order_id_akav = await self.bot_place_order_safe("AKAV", akav_qty, xchange_client.Side.BUY, akav_ask)
+
+            if order_id_akim and order_id_akav:
+                pos_id = len(self.inverse_arb_positions)
+                self.inverse_arb_positions.append({
+                    "pos_id": pos_id,
+                    "is_open": True,
+                    "akim_side": xchange_client.Side.BUY,
+                    "akim_qty": akim_qty,
+                    "akim_avg_px": 0.0,
+                    "akav_side": xchange_client.Side.BUY,
+                    "akav_qty": akav_qty,
+                    "akav_avg_px": 0.0,
+                    "target_profit": self.fair_price_AKIM - akim_ask
+                })
+                # Map the orders
+                self.orderid_to_positionid[order_id_akim] = pos_id
+                self.orderid_to_positionid[order_id_akav] = pos_id
+    
+    async def check_and_close_inverse_positions(self):
+        """
+        Continuously monitor open inverse arb positions to see if
+        we've captured enough spread to exit, or if we want to close at EOD.
+        """
+        akim_best_bid = self.get_best_bid("AKIM")
+        akim_best_ask = self.get_best_ask("AKIM")
+        akav_best_bid = self.get_best_bid("AKAV")
+        akav_best_ask = self.get_best_ask("AKAV")
+
+        for pos in self.inverse_arb_positions:
+            if not pos["is_open"]:
+                continue
+
+            # Calculate current liquidation PnL
+            # If side is SELL => we shorted, so we buy back at ask to close the short
+            # If side is BUY  => we are long, so we sell at bid to close the long
+
+            if pos["akim_side"] == xchange_client.Side.SELL:
+                # We sold at pos["akim_avg_px"], to close short we buy at best_ask
+                akim_pnl = (pos["akim_avg_px"] - akim_best_ask) * pos["akim_qty"]
+            else:
+                # We bought at pos["akim_avg_px"], to close the long we sell at best_bid
+                akim_pnl = (akim_best_bid - pos["akim_avg_px"]) * pos["akim_qty"]
+
+            if pos["akav_side"] == xchange_client.Side.SELL:
+                akav_pnl = (pos["akav_avg_px"] - akav_best_ask) * pos["akav_qty"]
+            else:
+                akav_pnl = (akav_best_bid - pos["akav_avg_px"]) * pos["akav_qty"]
+
+            total_pnl = akim_pnl + akav_pnl
+
+            # If we've hit target profit (or if near the close, etc.), close
+            if total_pnl >= pos["target_profit"]:
+                self.log(f"Closing Inverse Arb position {pos['pos_id']} at PnL: {total_pnl:.2f}")
+                
+                # Place orders to flatten
+                if pos["akim_side"] == xchange_client.Side.SELL:
+                    # Close short by buying
+                    await self.bot_place_order_safe("AKIM", pos["akim_qty"], xchange_client.Side.BUY, akim_best_ask)
+                else:
+                    # Close long by selling
+                    await self.bot_place_order_safe("AKIM", pos["akim_qty"], xchange_client.Side.SELL, akim_best_bid)
+
+                if pos["akav_side"] == xchange_client.Side.SELL:
+                    await self.bot_place_order_safe("AKAV", pos["akav_qty"], xchange_client.Side.BUY, akav_best_ask)
+                else:
+                    await self.bot_place_order_safe("AKAV", pos["akav_qty"], xchange_client.Side.SELL, akav_best_bid)
+
+                pos["is_open"] = False
+
 
     async def bot_handle_cancel_response(self, order_id: str, success: bool, error: Optional[str]) -> None:
         # order = self.open_orders[order_id]
@@ -224,6 +393,11 @@ class MyXchangeClient(xchange_client.XChangeClient):
             content = news_data.get("content", "")
             self.mkj_news_events.append((timestamp, content))
             self.fair_price_MKJ = None 
+
+            # Get market values for AKAV and AKIM
+            if "EOD - AKIM has rebalanced" in content:
+                self.prev_day_close_AKAV = self.get_mid_price("AKAV")
+                self.curr_day_open_AKIM = self.get_mid_price("AKIM")
             #print(f"[{timestamp}] MKJ Unstructured News: {content}")
             #Carina still working on more advanded stuffs (only updated the certain parts to the git)
 
@@ -292,6 +466,10 @@ class MyXchangeClient(xchange_client.XChangeClient):
 
             # ETF Arbitrage
             await self.bot_place_arbitrage_order()
+
+            # Inverse ETF Arbitrage
+            await self.bot_inverse_arbitrage_order()
+            await self.check_and_close_inverse_positions()
 
             # Market Making with Fade and Edge
             for symbol in SYMBOLS:
