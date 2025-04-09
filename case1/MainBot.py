@@ -57,7 +57,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
         #Trading variables
         self.order_size = 10
         self.etf_margin = 5 # minimum amount needed to justify ETF arbitrage
-        self.fade = 2
+        self.fade = 50
         self.min_margin = 1
         self.edge_sensitivity = 0.5
         self.slack = 4
@@ -92,32 +92,71 @@ class MyXchangeClient(xchange_client.XChangeClient):
         await self.place_order(symbol=symbol, qty=qty, side=side, px=price)
         self.log(f"Placed {side.name} {qty} {symbol} @ {price}")
 
-    async def bot_place_arbitrage_order(self, fair_price):
+    async def bot_place_arbitrage_order(self):
         '''
-        Inputs:
-            fair_price: (dict) containing fair price of each asset
+            profit off difference between nav and etf
         '''
         # TODO: consider order of buying/selling during arbitrage
-        akav_nav = sum(fair_price[s] for s in SYMBOLS)
-        price = fair_price["AKAV"]
-        diff = price - akav_nav
-        swap_fee = SWAP_MAP["toAKAV"].cost if diff > 0 else SWAP_MAP["fromAKAV"].cost
+        # TODO: handle risk limit block
 
-        if abs(diff) > self.etf_margin + swap_fee:
-            qty = 1 # TODO: change qty dynamically?
-            if diff > 0:
-                # ETF overpriced -> sell AKAV, buy components, swap from stocks to ETF
-                await self.bot_place_order_safe("AKAV", qty, xchange_client.Side.SELL, round(price))
-                for s in SYMBOLS:
-                    await self.bot_place_order_safe(s, qty, xchange_client.Side.BUY, round(fair_price[s]))
-                await self.place_swap_order("toAKAV", qty)
-            else:
-                # ETF underpriced -> buy AKAV, sell components, swap from ETF
-                await self.bot_place_order_safe("AKAV", qty, xchange_client.Side.BUY, round(price))
-                for s in SYMBOLS:
-                    await self.bot_place_order_safe(s, qty, xchange_client.Side.SELL, round(fair_price[s]))
-                await self.place_swap_order("fromAKAV", qty)
-            self.log(f"Arbitrage opportunity: ETF {'over' if diff > 0 else 'under'}priced by {diff:.2f}")
+        # Get best bid/ask prices for components
+        apt_bid = max(self.order_books["APT"].bids.keys()) if self.order_books["APT"].bids else 0
+        apt_ask = min(self.order_books["APT"].asks.keys()) if self.order_books["APT"].asks else 0
+        dlr_bid = max(self.order_books["DLR"].bids.keys()) if self.order_books["DLR"].bids else 0
+        dlr_ask = min(self.order_books["DLR"].asks.keys()) if self.order_books["DLR"].asks else 0
+        mkj_bid = max(self.order_books["MKJ"].bids.keys()) if self.order_books["MKJ"].bids else 0
+        mkj_ask = min(self.order_books["MKJ"].asks.keys()) if self.order_books["MKJ"].asks else 0
+
+        # NAV to create AKAV (buy components at ask prices)
+        nav_create = apt_ask + dlr_ask + mkj_ask
+        # NAV to redeem AKAV (sell components at bid prices)
+        nav_redeem = apt_bid + dlr_bid + mkj_bid
+
+        akav_bid = max(self.order_books["AKAV"].bids.keys()) if self.order_books["AKAV"].bids else 0
+        akav_ask = min(self.order_books["AKAV"].asks.keys()) if self.order_books["AKAV"].asks else 0
+
+        qty = 1 # TODO: change qty dynamically?
+
+        if akav_bid - nav_create - SWAP_MAP["toAKAV"].cost > self.etf_margin:
+            # ETF overpriced -> sell AKAV, buy components, swap from stocks to ETF
+            # Buy components at best ask (or better)
+            # TODO: give slightly better bid/ask to ensure order gets filled?
+            await self.bot_place_order_safe("APT", qty, xchange_client.Side.BUY, apt_ask) 
+            await self.bot_place_order_safe("DLR", qty, xchange_client.Side.BUY, dlr_ask)
+            await self.bot_place_order_safe("MKJ", qty, xchange_client.Side.BUY, mkj_ask)
+            # Sell AKAV at best bid (or better)
+            await self.bot_place_order_safe("AKAV", qty, xchange_client.Side.SELL, akav_bid)
+            await self.place_swap_order("toAKAV", qty)  # Convert components to AKAV
+        elif akav_ask - nav_redeem - SWAP_MAP["fromAKAV"].cost > self.etf_margin:
+            # ETF underpriced -> buy AKAV, sell components, swap from ETF
+                # Buy AKAV at best ask (or better)
+            await self.bot_place_order_safe("AKAV", qty, xchange_client.Side.BUY, akav_ask)
+            # Sell components at best bid (or better)
+            await self.bot_place_order_safe("APT", qty, xchange_client.Side.SELL, apt_bid)
+            await self.bot_place_order_safe("DLR", qty, xchange_client.Side.SELL, dlr_bid)
+            await self.bot_place_order_safe("MKJ", qty, xchange_client.Side.SELL, mkj_bid)
+            await self.place_swap_order("fromAKAV", qty)  # Redeem AKAV to components
+
+        # akav_nav = sum(fair_price[s] for s in SYMBOLS)
+        # price = fair_price["AKAV"]
+        # diff = price - akav_nav
+        # swap_fee = SWAP_MAP["toAKAV"].cost if diff > 0 else SWAP_MAP["fromAKAV"].cost
+
+        # if abs(diff) > self.etf_margin + swap_fee:
+        #     qty = 1 # TODO: change qty dynamically?
+        #     if diff > 0:
+        #         # ETF overpriced -> sell AKAV, buy components, swap from stocks to ETF
+        #         await self.bot_place_order_safe("AKAV", qty, xchange_client.Side.SELL, round(price))
+        #         for s in SYMBOLS:
+        #             await self.bot_place_order_safe(s, qty, xchange_client.Side.BUY, round(fair_price[s]))
+        #         await self.place_swap_order("toAKAV", qty)
+        #     else:
+        #         # ETF underpriced -> buy AKAV, sell components, swap from ETF
+        #         await self.bot_place_order_safe("AKAV", qty, xchange_client.Side.BUY, round(price))
+        #         for s in SYMBOLS:
+        #             await self.bot_place_order_safe(s, qty, xchange_client.Side.SELL, round(fair_price[s]))
+        #         await self.place_swap_order("fromAKAV", qty)
+        #     self.log(f"Arbitrage opportunity: ETF {'over' if diff > 0 else 'under'}priced by {diff:.2f}")
 
     async def bot_handle_cancel_response(self, order_id: str, success: bool, error: Optional[str]) -> None:
         # order = self.open_orders[order_id]
@@ -249,11 +288,10 @@ class MyXchangeClient(xchange_client.XChangeClient):
     async def trade(self):
         while True:
             # TODO: replace mid-price with actual fair_price
-            # fair_price = {s: self.get_mid_price(s) for s in ALL_SYMBOLS}
-            fair_price = {"APT": self.fair_price_APT, "DLR": self.fair_price_DLR, "MKJ": self.fair_price_MKJ, "AKAV": self.fair_price_AKAV, "AKIM": self.fair_price_AKIM}
+            fair_price = {"APT": self.fair_price_APT, "DLR": self.fair_price_DLR, "MKJ": self.fair_price_MKJ}
 
             # ETF Arbitrage
-            await self.bot_place_arbitrage_order(fair_price)
+            await self.bot_place_arbitrage_order()
 
             # Market Making with Fade and Edge
             for symbol in SYMBOLS:
@@ -271,8 +309,8 @@ class MyXchangeClient(xchange_client.XChangeClient):
                 # Level Orders
                 for level in range(len(self.spreads)):
                     spread = self.spreads[level]
-                    bid = round(fair_price[symbol] - self.fade - spread)
-                    ask = round(fair_price[symbol] + self.fade + spread)
+                    bid = round(fair_price[symbol] + fade_adj - edge - spread)
+                    ask = round(fair_price[symbol] + fade_adj + edge + spread)
                     await self.bot_place_order_safe(symbol, 2, xchange_client.Side.BUY, bid)
                     await self.bot_place_order_safe(symbol, 2, xchange_client.Side.SELL, ask)
 
