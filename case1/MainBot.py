@@ -328,54 +328,14 @@ class MyXchangeClient(xchange_client.XChangeClient):
 
 
     async def bot_handle_cancel_response(self, order_id: str, success: bool, error: Optional[str]) -> None:
-        """
-        Called when a cancel order response is received.
-        If success is True, it logs the cancellation and (if desired) removes the order from self.open_orders.
-        If not successful, logs the error.
-        """
-        if order_id in self.open_orders:
-            order = self.open_orders[order_id]  # Assume order structure: [order_request, pending_qty, is_market]
-            if success:
-                print(f"{'Market' if order[2] else 'Limit'} Order ID {order_id} cancelled, {order[1]} unfilled")
-                self.log(f"Cancel response: Order {order_id} cancelled. Unfilled quantity: {order[1]}")
-                # Remove the order from tracking because it was cancelled successfully.
-                del self.open_orders[order_id]
-            else:
-                print(f"Cancel response: Order {order_id} cancellation failed - {error}")
-                self.log(f"Cancel response: Order {order_id} cancellation failed with error: {error}")
-        else:
-            print(f"Cancel response received for unknown order {order_id}")
+        order = self.open_orders[order_id]
+        print(f"{'Market' if order[2] else 'Limit'} Order ID {order_id} cancelled, {order[1]} unfilled")
 
     async def bot_handle_order_fill(self, order_id: str, qty: int, price: int):
-        """
-        Called when an order is filled (partially or completely).
-        Here, we simply log the fill event and print the updated positions.
-        """
-        # The base client has already updated self.positions.
-        print("Order fill received for order", order_id)
-        print("Filled quantity:", qty, "at price:", price)
-        print("Updated positions:", self.positions)
-        self.log(f"Order fill: Order {order_id} filled {qty} shares at {price}. New positions: {self.positions}")
-        # Optionally, if you track partial fills within open_orders,
-        # update or remove the order from self.open_orders accordingly.
-        if order_id in self.open_orders:
-            # could optionally remove the entry if fully filled.
-            order = self.open_orders[order_id]
-            if order[1] - qty <= 0:
-                del self.open_orders[order_id]
-            else:
-                order[1] -= qty  # Reduce remaining quantity
+        print("Order fill received. Updated positions:", self.positions)
 
     async def bot_handle_order_rejected(self, order_id: str, reason: str) -> None:
-        """
-        Called when an order is rejected.
-        Logs the rejection reason and removes the order from our tracking.
-        """
         print("Order rejected because of:", reason)
-        self.log(f"Order {order_id} rejected: {reason}")
-        # Remove the order from open_orders if it is tracked.
-        if order_id in self.open_orders:
-            del self.open_orders[order_id]
 
 
     async def bot_handle_trade_msg(self, symbol: str, price: int, qty: int):
