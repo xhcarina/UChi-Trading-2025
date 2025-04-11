@@ -9,6 +9,11 @@ from collections import defaultdict, deque
 from datetime import datetime
 from utcxchangelib import xchange_client
 from utcxchangelib.xchange_client import SWAP_MAP
+import tkinter as tk
+from tkinter import ttk
+
+import params as params
+from params_gui import ParametersGUI
 
 
 SYMBOLS = ["APT", "DLR", "MKJ"]
@@ -416,7 +421,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
         #print(f"{'Market' if order[2] else 'Limit'} Order ID {order_id} cancelled, {order[1]} unfilled")
 
     async def bot_handle_order_fill(self, order_id: str, qty: int, price: int):
-        #print("Order fill received. Updated positions:", self.positions)
+        print("Order fill received. Updated positions:", self.positions)
         pass
     
     async def bot_handle_order_rejected(self, order_id: str, reason: str) -> None:
