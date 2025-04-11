@@ -6,6 +6,8 @@ import numpy as np
 import random
 import os
 from collections import defaultdict
+from collections import deque
+from SlidingWindow import find_fair_price
 from datetime import datetime
 from utcxchangelib import xchange_client
 from utcxchangelib.xchange_client import SWAP_MAP
