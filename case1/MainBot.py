@@ -449,7 +449,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
             # Call the Monte Carlo simulation to compute the probability.
             probability = self.monte_carlo_probability(cumulative, remaining_events, threshold, self.alpha, self.sigma, n_sims=10000)
 
-        self.fair_price_DLR = 100 * probability
+        self.fair_price_DLR = 10000 * probability
         print(f"[timestamp: {timestamp}] Updated DLR fair price: {self.fair_price_DLR:.2f} "
             f"(Probability: {probability:.2%}, remaining events: {remaining_events})")
 
