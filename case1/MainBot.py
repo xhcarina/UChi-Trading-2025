@@ -9,7 +9,6 @@ from collections import defaultdict
 from datetime import datetime
 from utcxchangelib import xchange_client
 from utcxchangelib.xchange_client import SWAP_MAP
-from SlidingWindow import find_fair_price
 
 
 SYMBOLS = ["APT", "DLR", "MKJ"]
@@ -32,11 +31,10 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.round = 0
         self.logfile = os.path.join(LOG_PATH, f"trading_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
 
-        # Fair price variables
+        #Fair price variables
         self.fair_price_APT = None    
         self.fair_price_DLR = None   
         self.fair_price_MKJ = None
-        self.fair_price_AKIM = None
 
         # ETF arbitrage variables
         self.prev_day_close_AKAV = None
@@ -44,35 +42,56 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.etf_margin = 5 # minimum amount needed to justify ETF arbitrage
         self.inverse_eft_margin = 5 # minimum amount needed to justify inverse ETF arbitrage
 
-        # Sliding window for order book analysis
-        self.sliding_window = []      # List to store recent order book updates
-
-        # Container for open inverse arb positions
+         # Container for open inverse arb positions
+        # A typical entry will look like:
+        #   {
+        #       "pos_id": 123,
+        #       "is_open": True,
+        #       "akim_side": Side.SELL,
+        #       "akim_qty": 12,
+        #       "akim_avg_px": 101.0,
+        #       "akav_side": Side.SELL,
+        #       "akav_qty": 10,
+        #       "akav_avg_px": 105.0,
+        #       "target_profit": 2.0
+        #   }
         self.inverse_arb_positions = []
+
+        # For linking order_id -> a position in inverse_arb_positions
         self.orderid_to_positionid = {}
+
+        # Track partial fills: how many shares have been filled on a given order, 
+        # so we can compute weighted average fill price
         self.order_fills_qty = defaultdict(int)      # {order_id: total shares filled so far}
         self.order_fills_value = defaultdict(float)  # {order_id: total fill-value so far (qty * price)}
 
-        # News variables
+
+        
+        #News variables
         self.apt_earnings = None
+
         self.dlr_cumulative = 0 
         self.dlr_event_count = 0
         self.total_events_per_round = 10 * 5  # 10 days * 5 events per day = 50 events
+   
         self.alpha = 1.0630449594499
         self.sigma = 0.006
         self.ln_mu = math.log(self.alpha)  # constant, fixed value
         self.ln_sigma = self.sigma           # constant, fixed value
         self.pe_ratio_APT = 10 #Given on Ed
-        self.mkj_news_events = []     # List of unstructured news events for MKJ
 
-        # Trading variables
+
+        self.mkj_news_events = []     # List of unstructured news events for MKJ
+        
+
+        #Trading variables
         self.order_size = 10
         self.fade = 50
         self.min_margin = 1
         self.edge_sensitivity = 0.5
         self.slack = 4
         self.spreads = [5, 10, 15] 
-        self.level_orders = 5
+        self.level_orders = 5  
 
     def log(self, msg):
         with open(self.logfile, "a") as f:
@@ -430,7 +449,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
             # Call the Monte Carlo simulation to compute the probability.
             probability = self.monte_carlo_probability(cumulative, remaining_events, threshold, self.alpha, self.sigma, n_sims=10000)
 
-        self.fair_price_DLR = 10000 * probability
+        self.fair_price_DLR = 100 * probability
         print(f"[timestamp: {timestamp}] Updated DLR fair price: {self.fair_price_DLR:.2f} "
             f"(Probability: {probability:.2%}, remaining events: {remaining_events})")
 
@@ -441,9 +460,6 @@ class MyXchangeClient(xchange_client.XChangeClient):
         while True:
             # TODO: replace mid-price with actual fair_price
             fair_price = {"APT": self.fair_price_APT, "DLR": self.fair_price_DLR, "MKJ": self.fair_price_MKJ}
-
-            # Start MKJ fair price calculation
-            asyncio.create_task(self.MKJ_fair_price_SW())
 
             # ETF Arbitrage
             await self.bot_place_arbitrage_order()
@@ -495,85 +511,6 @@ class MyXchangeClient(xchange_client.XChangeClient):
             asyncio.create_task(self.handle_queued_messages())
 
         await self.connect()
-
-    async def extract_all_from_book(self, symbol: str) -> list:
-        """
-        Extract all orders (price, volume, order_type) from the order book for the given symbol.
-        Records both bids and asks.
-        """
-        # For this function, we assume the order book is a single object.
-        # We retrieve all orders (that is, all entries with nonzero volume).
-        book = self.order_books[symbol]
-        orders = []
-        for price, volume in book.bids.items():
-            if volume != 0:
-                orders.append((price, volume, "bid"))
-        for price, volume in book.asks.items():
-            if volume != 0:
-                orders.append((price, volume, "ask"))
-        # No need to sleep here; this is a quick extraction.
-        return orders
-        
-    async def collect_top_order_updates(self, symbol: str):
-        """
-        Continuously collect top-of-book bid and ask data for a symbol,
-        and append to the sliding window as (price, volume, 'bid'/'ask').
-        """
-        while True:
-            try:
-                book = self.order_books[symbol]
-
-                # Get top bid
-                if book.bids:
-                    top_bid_price = max(book.bids)
-                    top_bid_volume = book.bids[top_bid_price]
-                    self.sliding_window.append((top_bid_price, top_bid_volume, "bid"))
-
-                # Get top ask
-                if book.asks:
-                    top_ask_price = min(book.asks)
-                    top_ask_volume = book.asks[top_ask_price]
-                    self.sliding_window.append((top_ask_price, top_ask_volume, "ask"))
-
-            except Exception as e:
-                print(f"[collect_top_order_updates] Error while collecting top order updates for {symbol}: {e}")
-
-            await asyncio.sleep(0.5)  # Collect updates every half second
-
-
-    async def MKJ_fair_price_SW(self):
-        """
-        Continuously update MKJ fair price using a sliding window of top-of-book updates.
-        Assumes that `self.sliding_window` is populated with (price, volume, side) tuples.
-        """
-        # Launch background task to collect order updates
-        asyncio.create_task(self.collect_top_order_updates("MKJ"))
-        
-        while True:
-            orders = list(self.sliding_window)
-            
-            # Log the number of entries for debugging
-            print(f"[MKJ_fair_price_SW] Sliding window has {len(orders)} entries")
-
-            # Validate order format before passing to find_fair_price
-            cleaned_orders = []
-            for order in orders:
-                if isinstance(order, tuple) and len(order) == 3:
-                    price, volume, side = order
-                    if isinstance(price, (int, float)) and isinstance(volume, (int, float)) and isinstance(side, str):
-                        cleaned_orders.append((price, volume, side))
-
-            # Use cleaned list to compute fair price
-            computed_price = find_fair_price(cleaned_orders)
-
-            # Safely update
-            if computed_price is not None:
-                self.fair_price_MKJ = computed_price
-                print(f"[MKJ_fair_price_SW] Updated fair price: {self.fair_price_MKJ}", flush=True)
-            else:
-                print(f"[MKJ_fair_price_SW] find_fair_price returned None. Orders: {cleaned_orders}", flush=True)
-
-            await asyncio.sleep(2)  # Adjust frequency as needed
 
 
 async def main(user_interface: bool):
