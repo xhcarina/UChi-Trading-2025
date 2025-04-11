@@ -19,6 +19,7 @@ MAX_ORDER_SIZE = 40
 MAX_OPEN_ORDERS = 50
 MAX_ABSOLUTE_POSITION = 200
 OUTSTANDING_VOLUME = 120
+SLIDINGWINDOWCAP = 50
 
 LOG_PATH = "./log"
 os.makedirs(LOG_PATH, exist_ok=True)
@@ -35,6 +36,8 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.fair_price_APT = None    
         self.fair_price_DLR = None   
         self.fair_price_MKJ = None
+        self.fair_price_AKAV = None
+        self.fair_price_AKIM = None
 
         # ETF arbitrage variables
         self.prev_day_close_AKAV = None
@@ -80,7 +83,8 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.ln_sigma = self.sigma           # constant, fixed value
         self.pe_ratio_APT = 10 #Given on Ed
 
-
+        #Handling Sliding window
+        self.sliding_window = deque(maxlen=SLIDINGWINDOWCAP)
         self.mkj_news_events = []     # List of unstructured news events for MKJ
         
 
@@ -341,7 +345,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
     async def bot_handle_trade_msg(self, symbol: str, price: int, qty: int):
         # This function is called when an actual trade is executed.
         # It provides immediate market data such as the transaction price and volume.
-        print(f"Trade executed for {symbol}: {qty} shares at {price}")
+        # print(f"Trade executed for {symbol}: {qty} shares at {price}")
         # Here you could update your fair price estimation based on recent trade activity.
         # For example:
         #fair_price_based_on_trade = <YOUR_FORMULA_HERE>
@@ -453,8 +457,94 @@ class MyXchangeClient(xchange_client.XChangeClient):
         print(f"[timestamp: {timestamp}] Updated DLR fair price: {self.fair_price_DLR:.2f} "
             f"(Probability: {probability:.2%}, remaining events: {remaining_events})")
 
+    async def extract_all_from_book(self, symbol: str) -> list:
+        """
+        Extract all orders (price, volume, order_type) from the order book for the given symbol.
+        Records both bids and asks.
+        """
+        # For this function, we assume the order book is a single object.
+        # We retrieve all orders (that is, all entries with nonzero volume).
+        book = self.order_books[symbol]
+        orders = []
+        for price, volume in book.bids.items():
+            if volume != 0:
+                orders.append((price, volume, "bid"))
+        for price, volume in book.asks.items():
+            if volume != 0:
+                orders.append((price, volume, "ask"))
+        # No need to sleep here; this is a quick extraction.
+        return orders
+        
+    async def collect_top_order_updates(self, symbol: str):
+        """
+        Continuously collect top-of-book bid and ask data for a symbol,
+        and append to the sliding window as (price, volume, 'bid'/'ask').
+        """
+        while True:
+            try:
+                book = self.order_books[symbol]
+
+                # Get top bid
+                if book.bids:
+                    top_bid_price = max(book.bids)
+                    top_bid_volume = book.bids[top_bid_price]
+                    self.sliding_window.append((top_bid_price, top_bid_volume, "bid"))
+
+                # Get top ask
+                if book.asks:
+                    top_ask_price = min(book.asks)
+                    top_ask_volume = book.asks[top_ask_price]
+                    self.sliding_window.append((top_ask_price, top_ask_volume, "ask"))
+
+            except Exception as e:
+                print(f"[collect_top_order_updates] Error while collecting top order updates for {symbol}: {e}")
+
+            await asyncio.sleep(0.5)  # Collect updates every half second
 
 
+    async def MKJ_fair_price_SW(self):
+        """
+        Continuously update MKJ fair price using a sliding window of top-of-book updates.
+        Assumes that `self.sliding_window` is populated with (price, volume, side) tuples.
+        """
+        # Launch background task to collect order updates
+        asyncio.create_task(self.collect_top_order_updates("MKJ"))
+        
+        while True:
+            orders = list(self.sliding_window)
+            
+            # Log the number of entries for debugging
+            print(f"[MKJ_fair_price_SW] Sliding window has {len(orders)} entries")
+
+            # Validate order format before passing to find_fair_price
+            cleaned_orders = []
+            for order in orders:
+                if isinstance(order, tuple) and len(order) == 3:
+                    price, volume, side = order
+                    if isinstance(price, (int, float)) and isinstance(volume, (int, float)) and isinstance(side, str):
+                        cleaned_orders.append((price, volume, side))
+
+            # Use cleaned list to compute fair price
+            computed_price = find_fair_price(cleaned_orders)
+
+            # Safely update
+            if computed_price is not None:
+                self.fair_price_MKJ = computed_price
+                print(f"[MKJ_fair_price_SW] Updated fair price: {self.fair_price_MKJ}", flush=True)
+            else:
+                print(f"[MKJ_fair_price_SW] find_fair_price returned None. Orders: {cleaned_orders}", flush=True)
+
+            await asyncio.sleep(2)  # Adjust frequency as needed
+
+
+
+
+    async def debug(self):
+        """This function is used to debug"""
+        while True:
+            await asyncio.sleep(3)
+            print("The desque",self.sliding_window)
+            print("MKJ fair price",self.fair_price_MKJ)
 
     async def trade(self):
         while True:
@@ -492,14 +582,14 @@ class MyXchangeClient(xchange_client.XChangeClient):
             self.round += 1
             await asyncio.sleep(1)
 
-    # async def view_books(self):
-    #     while True:
-    #         await asyncio.sleep(3)
-    #         for security, book in self.order_books.items():
-    #             sorted_bids = sorted((k,v) for k,v in book.bids.items() if v != 0)
-    #             sorted_asks = sorted((k,v) for k,v in book.asks.items() if v != 0)
-    #             print(f"Bids for {security}:\n{sorted_bids}")
-    #             print(f"Asks for {security}:\n{sorted_asks}")
+    async def view_books(self):
+        while True:
+            await asyncio.sleep(3)
+            for security, book in self.order_books.items():
+                sorted_bids = sorted((k,v) for k,v in book.bids.items() if v != 0)
+                sorted_asks = sorted((k,v) for k,v in book.asks.items() if v != 0)
+                print(f"Bids for {security}:\n{sorted_bids}")
+                print(f"Asks for {security}:\n{sorted_asks}")
 
     async def start(self, user_interface):
         asyncio.create_task(self.trade())
