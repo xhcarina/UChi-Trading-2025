@@ -5,6 +5,7 @@ import math
 import numpy as np
 import random
 import os
+import json
 from collections import defaultdict
 from collections import deque
 from SlidingWindow import find_fair_price
@@ -22,8 +23,6 @@ MAX_ORDER_SIZE = 40
 MAX_OPEN_ORDERS = 50
 MAX_ABSOLUTE_POSITION = 200
 OUTSTANDING_VOLUME = 120
-SLIDINGWINDOWCAP = 13
-
 LOG_PATH = "./log"
 os.makedirs(LOG_PATH, exist_ok=True)
 
@@ -118,7 +117,15 @@ class MyXchangeClient(xchange_client.XChangeClient):
         super().__init__(host, username, password)
         self.round = 0
         self.logfile = os.path.join(LOG_PATH, f"trading_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+        self.config_path = os.path.join(os.path.dirname(__file__), 'trading_config.json')
+        self.last_config_load = 0
+        self.config = self.load_config()
 
+        # Load trading configuration
+        config_path = os.path.join(os.path.dirname(__file__), 'trading_config.json')
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
         # Fair price variables
         self.fair_price_APT = None    
         self.fair_price_DLR = None   
@@ -130,10 +137,10 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.prev_day_close_AKAV = None
         self.curr_day_open_AKIM = None
         self.etf_margin = 5 # minimum amount needed to justify ETF arbitrage
-        self.inverse_eft_margin = 5 # minimum amount needed to justify inverse ETF arbitrage
+        self.inverse_eft_margin = config['inverse_etf_margin'] # minimum amount needed to justify inverse ETF arbitrage
 
         # Sliding window for order book analysis
-        self.sliding_window = deque(maxlen=SLIDINGWINDOWCAP)
+        self.sliding_window = deque(maxlen=config['sliding_window_cap'])
 
         # Container for open inverse arb positions
         self.inverse_arb_positions = []
@@ -154,44 +161,16 @@ class MyXchangeClient(xchange_client.XChangeClient):
         self.mkj_news_events = []     # List of unstructured news events for MKJ
 
         # Trading variables
-        # Trading variables
-        self.order_size = 10  # Default size for market making orders (recommended: 5-20)
-        # Lower bound (5): More conservative, less risk but lower profit potential
-        # Upper bound (20): More aggressive, higher risk but better profit potential
-        # Current value (10): Balanced approach between risk and reward
-
-        self.fade = 50  # Price adjustment factor based on position size to prevent overexposure (recommended: 30-70)
-        # Lower bound (30): Less position-based price adjustment, more aggressive position building
-        # Upper bound (70): More conservative position management, quicker to reduce exposure
-        # Current value (50): Moderate position management
-
-        self.min_margin = 1  # Minimum profit margin required for orders (recommended: 0.5-2)
-        # Lower bound (0.5): More aggressive, willing to take smaller profits
-        # Upper bound (2): More selective, only takes trades with higher profit potential
-        # Current value (1): Balanced profit target
-
-        self.edge_sensitivity = 0.5  # Controls how aggressively we adjust prices based on market activity (recommended: 0.2-1.0)
-        # Lower bound (0.2): Less responsive to market activity, more stable pricing
-        # Upper bound (1.0): Very responsive to market activity, more dynamic pricing
-        # Current value (0.5): Moderate market responsiveness
-
-        self.slack = 4  # Additional buffer added to minimum margin for order placement (recommended: 2-6)
-        # Lower bound (2): Tighter spreads, more competitive but less profit per trade
-        # Upper bound (6): Wider spreads, less competitive but higher profit per trade
-        # Current value (4): Balanced spread width
-
-        self.spreads = [5, 10, 15]  # Different spread levels for tiered order placement (recommended: keep spreads within 2-20)
-        # Lower bound (2): Very tight spreads, high competition, lower profit per trade
-        # Upper bound (20): Very wide spreads, less competition, higher profit per trade
-        # Current values [5,10,15]: Progressive spread levels for different market conditions
-
-        self.level_orders = 5  # Number of orders to place at each spread level (recommended: 3-8)
-        # Lower bound (3): Less market presence, lower risk but less profit potential
-        # Upper bound (8): Strong market presence, higher risk but better profit potential
-        # Current value (5): Moderate market presence
+        self.order_size = config['order_size']  # Default size for market making orders
+        self.fade = config['fade']  # Price adjustment factor based on position size
+        self.min_margin = config['min_margin']  # Minimum profit margin required for orders
+        self.edge_sensitivity = config['edge_sensitivity']  # Controls how aggressively we adjust prices
+        self.slack = config['slack']  # Additional buffer added to minimum margin
+        self.spreads = config['spreads']  # Different spread levels for tiered order placement
+        self.level_orders = config['level_orders']  # Number of orders to place at each spread level
 
         # Initialize order book analyzers
-        self.mkj_analyzer = OrderBookAnalyzer("MKJ", SLIDINGWINDOWCAP)
+        self.mkj_analyzer = OrderBookAnalyzer("MKJ", config['sliding_window_cap'])
 
     def log(self, msg):
         with open(self.logfile, "a") as f:
@@ -569,8 +548,47 @@ class MyXchangeClient(xchange_client.XChangeClient):
 
 
 
+    def load_config(self):
+        """Load or reload the trading configuration"""
+        try:
+            with open(self.config_path, 'r') as f:
+                config = json.load(f)
+            self.last_config_load = os.path.getmtime(self.config_path)
+            return config
+        except Exception as e:
+            print(f"Error loading config: {e}")
+            return self.config if hasattr(self, 'config') else None
+
+    def check_and_reload_config(self):
+        """Check if config file has been modified and reload if necessary"""
+        try:
+            current_mtime = os.path.getmtime(self.config_path)
+            if current_mtime > self.last_config_load:
+                print("Reloading trading configuration...")
+                new_config = self.load_config()
+                if new_config:
+                    self.config = new_config
+                    # Update all configurable parameters
+                    self.inverse_eft_margin = self.config['inverse_etf_margin']
+                    self.sliding_window = deque(maxlen=self.config['sliding_window_cap'])
+                    self.order_size = self.config['order_size']
+                    self.fade = self.config['fade']
+                    self.min_margin = self.config['min_margin']
+                    self.edge_sensitivity = self.config['edge_sensitivity']
+                    self.slack = self.config['slack']
+                    self.spreads = self.config['spreads']
+                    self.level_orders = self.config['level_orders']
+                    # Update the analyzer with new window size
+                    self.mkj_analyzer = OrderBookAnalyzer("MKJ", self.config['sliding_window_cap'])
+                    print("Configuration reloaded successfully")
+        except Exception as e:
+            print(f"Error checking/reloading config: {e}")
+
     async def trade(self):
         while True:
+            # Check for config updates every 5 seconds
+            self.check_and_reload_config()
+            
             # TODO: replace mid-price with actual fair_price
             fair_price = {"APT": self.fair_price_APT, "DLR": self.fair_price_DLR, "MKJ": self.fair_price_MKJ}
 
@@ -592,6 +610,19 @@ class MyXchangeClient(xchange_client.XChangeClient):
                     
                 position = self.positions[symbol]
                 fade_adj = -self.fade * (1 if position > 0 else -1) * math.log2(1 + abs(position) / MAX_ABSOLUTE_POSITION)
+                
+                # Print current trading parameters for monitoring
+                print(f"\nCurrent Trading Parameters for {symbol}:")
+                print(f"Fade: {self.fade}")
+                print(f"Position: {position}")
+                print(f"Fade Adjustment: {fade_adj:.2f}")
+                print(f"Order Size: {self.order_size}")
+                print(f"Min Margin: {self.min_margin}")
+                print(f"Edge Sensitivity: {self.edge_sensitivity}")
+                print(f"Slack: {self.slack}")
+                print(f"Spreads: {self.spreads}")
+                print(f"Level Orders: {self.level_orders}")
+                print(f"Sliding Window Cap: {self.config['sliding_window_cap']}")
 
                 for side in [xchange_client.Side.BUY, xchange_client.Side.SELL]:
                     activity = self.get_market_activity_level(symbol, side)
@@ -699,7 +730,7 @@ class MyXchangeClient(xchange_client.XChangeClient):
 
 async def main(user_interface: bool):
     # SERVER = '127.0.0.1:8000'   # run locally
-    SERVER = '3.138.154.148:3333'
+    SERVER = 'server.uchicagotradingcompetition25.com:3333'
     my_client = MyXchangeClient(SERVER,"chicago10","Gaw%3opFxg")
     await my_client.start(user_interface)
     return
