@@ -1,0 +1,14 @@
+[Round 3] Closing Inverse Arb position 1 at PnL: 105222.00
+[Round 4] Closing Inverse Arb position 3 at PnL: 105252.00
+[Round 5] Closing Inverse Arb position 5 at PnL: 105252.00
+[Round 6] Closing Inverse Arb position 7 at PnL: 105252.00
+[Round 7] Closing Inverse Arb position 9 at PnL: 105252.00
+[Round 8] Closing Inverse Arb position 11 at PnL: 105252.00
+[Round 9] Closing Inverse Arb position 13 at PnL: 105306.00
+[Round 10] Closing Inverse Arb position 15 at PnL: 105306.00
+[Round 16] Closing Inverse Arb position 18 at PnL: 105306.00
+[Round 18] Closing Inverse Arb position 20 at PnL: 105436.00
+[Round 25] Closing Inverse Arb position 23 at PnL: 107456.00
+[Round 35] Closing Inverse Arb position 26 at PnL: 111384.00
+[Round 36] Closing Inverse Arb position 28 at PnL: 111384.00
+[Round 110] Closing Inverse Arb position 30 at PnL: 114454.00

@@ -1,0 +1,11 @@
+{
+    "sliding_window_cap": 13,
+    "order_size": 10,
+    "fade": 50,
+    "min_margin": 1,
+    "edge_sensitivity": 0.5,
+    "slack": 4,
+    "spreads": [5, 10, 15],
+    "level_orders": 5,
+    "inverse_etf_margin": 5
+} 

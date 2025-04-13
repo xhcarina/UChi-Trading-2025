@@ -1,0 +1,3 @@
+[Round 80] Closing Inverse Arb position 1 at PnL: 216800.00
+[Round 111] Closing Inverse Arb position 3 at PnL: 234190.00
+[Round 126] Closing Inverse Arb position 5 at PnL: 274460.00
